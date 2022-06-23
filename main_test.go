@@ -1,7 +1,7 @@
 package main
 
 import (
-	"encoding/json"
+	"github.com/magnuswahlstrand/json-rpc/rpc"
 	"github.com/stretchr/testify/require"
 	"io/ioutil"
 	"net/http"
@@ -9,19 +9,6 @@ import (
 	"strings"
 	"testing"
 )
-
-type Request[T any] struct {
-	JSONRPC string       `json:"jsonrpc"`
-	Method  string       `json:"method"`
-	Params  *T           `json:"params"`
-	ID      *interface{} `json:"id"`
-}
-
-type Response[V any] struct {
-	JSONRPC string       `json:"jsonrpc"`
-	Result  V            `json:"result"`
-	ID      *interface{} `json:"id"`
-}
 
 func subtract(in [2]int) (int, error) {
 	return in[0] - in[1], nil
@@ -36,125 +23,108 @@ func namedSubtract(in namedSubtractRequest) (int, error) {
 	return in.Minuend - in.Subtrahend, nil
 }
 
-func aNotifiedFunction(in []int) (int, error) {
-	return 0, nil
-}
-
-func NewHandler[T, V any](fn func(T) (V, error)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req Request[T]
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			panic("not implemented")
-		}
-
-		// Safeguards
-		if req.Params == nil {
-			panic("not supported")
-		}
-
-		resp, err := fn(*req.Params)
-		if err != nil {
-			panic("not implemented")
-		}
-
-		if req.ID == nil {
-			w.WriteHeader(http.StatusAccepted)
-			return
-		}
-
-		rpcResp := Response[V]{
-			"2.0",
-			resp,
-			req.ID,
-		}
-
-		if err := json.NewEncoder(w).Encode(rpcResp); err != nil {
-			panic("not implemented")
-		}
-	}
-}
-
 func TestRPC(t *testing.T) {
 	tcs := []struct {
-		handler  http.HandlerFunc
-		name     string
-		in       string
-		expected string
+		procedure rpc.ProcedureInf
+		name      string
+		in        string
+		expected  string
 	}{
 		{
-			handler:  NewHandler(subtract),
-			name:     "rpc call with positional parameters 1",
-			in:       `{"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1}`,
-			expected: `{"jsonrpc":"2.0","result":19,"id":1}`,
+			procedure: rpc.RemoteProcedure("subtract", subtract),
+			name:      "rpc call with positional parameters 1",
+			in:        `{"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1}`,
+			expected:  `{"jsonrpc":"2.0","result":19,"id":1}`,
 		},
 		{
-			handler:  NewHandler(subtract),
-			name:     "rpc call with positional parameters 2",
-			in:       `{"jsonrpc": "2.0", "method": "subtract", "params": [23, 42], "id": 2}`,
-			expected: `{"jsonrpc":"2.0","result":-19,"id":2}`,
+			procedure: rpc.RemoteProcedure("subtract", subtract),
+			name:      "rpc call with positional parameters 2",
+			in:        `{"jsonrpc": "2.0", "method": "subtract", "params": [23, 42], "id": 2}`,
+			expected:  `{"jsonrpc":"2.0","result":-19,"id":2}`,
 		},
 		{
-			handler:  NewHandler(namedSubtract),
-			name:     "rpc call with named parameters 1",
-			in:       `{"jsonrpc": "2.0", "method": "subtract", "params": {"subtrahend": 23, "minuend": 42}, "id": 3}`,
-			expected: `{"jsonrpc":"2.0","result":19,"id":3}`,
+			procedure: rpc.RemoteProcedure("subtract", namedSubtract),
+			name:      "rpc call with named parameters 1",
+			in:        `{"jsonrpc": "2.0", "method": "subtract", "params": {"subtrahend": 23, "minuend": 42}, "id": 3}`,
+			expected:  `{"jsonrpc": "2.0","result": 19, "id": 3}`,
 		},
 		{
-			handler:  NewHandler(namedSubtract),
-			name:     "rpc call with named parameters 2",
-			in:       `{"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23}, "id": 4}`,
-			expected: `{"jsonrpc":"2.0","result":19,"id":4}`,
+			procedure: rpc.RemoteProcedure("subtract", namedSubtract),
+			name:      "rpc call with named parameters 2",
+			in:        `{"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23}, "id": 4}`,
+			expected:  `{"jsonrpc": "2.0", "result":19, "id":4}`,
 		},
 		{
-			handler:  NewHandler(namedSubtract),
-			name:     "rpc call of non-existent method",
-			in:       `{"jsonrpc": "2.0", "method": "foobar", "id": "1"}`,
-			expected: `{"jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found"}, "id": "1"}`,
+			procedure: rpc.RemoteProcedure("subtract", namedSubtract),
+			name:      "rpc call of non-existent method",
+			in:        `{"jsonrpc": "2.0", "method": "foobar", "id": "1"}`,
+			expected:  `{"jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found"}, "id": "1"}`,
+		},
+		{
+			procedure: rpc.RemoteProcedure("subtract", namedSubtract),
+			name:      "rpc call with invalid JSON",
+			in:        `{"jsonrpc": "2.0", "method": "foobar, "params": "bar", "baz]`,
+			expected:  `{"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": null}`,
+		},
+		{
+			procedure: rpc.RemoteProcedure("subtract", namedSubtract),
+			name:      "rpc call with invalid Request object",
+			in:        `{"jsonrpc": "2.0", "method": 1, "params": "bar"}`,
+			expected:  `{"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": null}`,
 		},
 	}
+
 	for _, tc := range tcs {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/upper?word=abc", strings.NewReader(tc.in))
+			// Arrange
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.in))
 			w := httptest.NewRecorder()
-			tc.handler(w, req)
-			data, err := ioutil.ReadAll(w.Result().Body)
+			handler := rpc.Router().AddProcedure(tc.procedure).Handler
 
-			actual := strings.TrimSpace(string(data))
+			// Act
+			handler(w, req)
+			actual, err := ioutil.ReadAll(w.Result().Body)
+
+			// Assert
 			require.NoError(t, err)
-			require.Equal(t, tc.expected, actual)
+			require.JSONEq(t, tc.expected, string(actual))
 		})
 	}
 }
 
 func TestRPCNotifications(t *testing.T) {
 	tcs := []struct {
-		handler http.HandlerFunc
-		name    string
-		in      string
+		procedure rpc.ProcedureInf
+		name      string
+		in        string
 	}{
 		{
-			handler: NewHandler(func(t []int) (int, error) { return 0, nil }),
-			name:    "notification 1",
-			in:      `{"jsonrpc": "2.0", "method": "update", "params": [1,2,3,4,5]}`,
+			procedure: rpc.RemoteProcedure("update", subtract),
+			name:      "notification 1",
+			in:        `{"jsonrpc": "2.0", "method": "update", "params": [1,2,3,4,5]}`,
 		},
-		//{
-		//	handler: NewHandler(func(t *string) (int, error) { return 0, nil }),
-		//	name:    "notification 2",
-		//	in:      `{"jsonrpc": "2.0", "method": "foobar"}`,
-		//},
+		{
+			procedure: rpc.RemoteProcedure("foobar", func(t struct{}) (string, error) { return "", nil }),
+			name:      "notification 2",
+			in:        `{"jsonrpc": "2.0", "method": "foobar"}`,
+		},
 	}
 	for _, tc := range tcs {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/upper?word=abc", strings.NewReader(tc.in))
+			// Arrange
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.in))
 			w := httptest.NewRecorder()
-			tc.handler(w, req)
-			data, err := ioutil.ReadAll(w.Result().Body)
-			require.NoError(t, err)
+			handler := rpc.Router().AddProcedure(tc.procedure).Handler
 
-			actual := strings.TrimSpace(string(data))
-			require.Empty(t, actual)
+			// Act
+			handler(w, req)
+			actual, err := ioutil.ReadAll(w.Result().Body)
+
+			// Assert
+			require.NoError(t, err)
+			require.Empty(t, string(actual))
 		})
 	}
 }
